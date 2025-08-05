@@ -1,10 +1,21 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
+import { useTheme } from '../contexts/ThemeContext';
+import { 
+  Plus, 
+  MessageCircle, 
+  Sun, 
+  Moon, 
+  LogOut, 
+  User, 
+  Send 
+} from 'lucide-react';
 import './Chat.css';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3002';
 
 function Chat({ setIsAuthenticated }) {
+  const { isDarkMode, toggleTheme } = useTheme();
   const [conversations, setConversations] = useState([]);
   const [currentConversation, setCurrentConversation] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -22,13 +33,13 @@ function Chat({ setIsAuthenticated }) {
 
   useEffect(() => {
     loadConversations();
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (currentConversation) {
       loadMessages(currentConversation.id);
     }
-  }, [currentConversation]);
+  }, [currentConversation]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const getAuthHeaders = () => {
     const token = localStorage.getItem('token');
@@ -220,12 +231,11 @@ function Chat({ setIsAuthenticated }) {
       <div className="sidebar">
         <div className="sidebar-header">
           <button onClick={createNewConversation} className="new-chat-btn">
-            + New Chat
-          </button>
-          <button onClick={handleLogout} className="logout-btn">
-            Logout
+            <Plus size={16} />
+            New chat
           </button>
         </div>
+        
         <div className="conversations-list">
           {conversations.map(conv => (
             <div
@@ -233,47 +243,98 @@ function Chat({ setIsAuthenticated }) {
               className={`conversation-item ${currentConversation?.id === conv.id ? 'active' : ''}`}
               onClick={() => setCurrentConversation(conv)}
             >
-              {conv.title || 'New Conversation'}
+              <MessageCircle size={16} />
+              <span className="conversation-title">{conv.title || 'New Conversation'}</span>
             </div>
           ))}
+        </div>
+
+        <div className="sidebar-footer">
+          <button onClick={toggleTheme} className="theme-toggle-btn" title={`Switch to ${isDarkMode ? 'light' : 'dark'} mode`}>
+            {isDarkMode ? <Sun size={16} /> : <Moon size={16} />}
+          </button>
+          
+          <button onClick={handleLogout} className="logout-btn" title="Logout">
+            <LogOut size={16} />
+          </button>
         </div>
       </div>
       
       <div className="chat-main">
-        <div className="messages-container">
-          {messages.map(message => (
-            <div key={message.id} className={`message ${message.role}`}>
-              <div className="message-content">
-                {message.content}
-                {message.streaming && <span className="streaming-cursor">|</span>}
-              </div>
+        {messages.length === 0 ? (
+          <div className="welcome-screen">
+            <div className="welcome-content">
+              <h1>ChatGPT Clone</h1>
+              <p>How can I help you today?</p>
             </div>
-          ))}
-          {loading && !messages.some(msg => msg.streaming) && (
-            <div className="message assistant">
-              <div className="message-content">
-                <div className="typing-indicator">Thinking...</div>
-              </div>
-            </div>
-          )}
-          <div ref={messagesEndRef} />
-        </div>
-        
-        <form onSubmit={sendMessage} className="message-input-form">
-          <div className="input-container">
-            <input
-              type="text"
-              value={inputMessage}
-              onChange={(e) => setInputMessage(e.target.value)}
-              placeholder="Type your message..."
-              disabled={loading}
-              className="message-input"
-            />
-            <button type="submit" disabled={loading || !inputMessage.trim()} className="send-btn">
-              Send
-            </button>
           </div>
-        </form>
+        ) : (
+          <div className="messages-container">
+            {messages.map(message => (
+              <div key={message.id} className={`message-wrapper ${message.role}`}>
+                <div className="message-content">
+                  <div className="avatar">
+                    {message.role === 'user' ? (
+                      <User size={20} />
+                    ) : (
+                      <div className="ai-avatar">AI</div>
+                    )}
+                  </div>
+                  <div className="message-text">
+                    {message.content}
+                    {message.streaming && <span className="streaming-cursor">▋</span>}
+                  </div>
+                </div>
+              </div>
+            ))}
+            {loading && !messages.some(msg => msg.streaming) && (
+              <div className="message-wrapper assistant">
+                <div className="message-content">
+                  <div className="avatar">
+                    <div className="ai-avatar">AI</div>
+                  </div>
+                  <div className="message-text">
+                    <div className="typing-indicator">
+                      <span></span>
+                      <span></span>
+                      <span></span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+            <div ref={messagesEndRef} />
+          </div>
+        )}
+        
+        <div className="input-section">
+          <form onSubmit={sendMessage} className="message-input-form">
+            <div className="input-container">
+              <textarea
+                value={inputMessage}
+                onChange={(e) => setInputMessage(e.target.value)}
+                placeholder="Message ChatGPT..."
+                disabled={loading}
+                className="message-input"
+                rows={1}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    sendMessage(e);
+                  }
+                }}
+              />
+              <button 
+                type="submit" 
+                disabled={loading || !inputMessage.trim()} 
+                className="send-btn"
+                title="Send message"
+              >
+                <Send size={16} />
+              </button>
+            </div>
+          </form>
+        </div>
       </div>
     </div>
   );

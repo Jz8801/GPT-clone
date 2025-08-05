@@ -24,12 +24,10 @@ router.get('/stream', async (req, res) => {
     }
 
     const token = authorization.replace('Bearer ', '');
-    console.log('Token received:', token.substring(0, 20) + '...');
     
     let user;
     try {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      console.log('JWT decoded successfully, userId:', decoded.userId);
       
       // Validate user exists in database (matching auth middleware)
       user = await prisma.user.findUnique({
@@ -38,13 +36,9 @@ router.get('/stream', async (req, res) => {
       });
 
       if (!user) {
-        console.error('User not found in database for userId:', decoded.userId);
         return res.status(401).json({ error: 'Invalid token' });
       }
-      
-      console.log('User found:', user.email);
     } catch (jwtError) {
-      console.error('JWT verification error:', jwtError.message);
       return res.status(401).json({ error: 'Invalid token' });
     }
 
@@ -63,10 +57,12 @@ router.get('/stream', async (req, res) => {
         return res.status(404).json({ error: 'Conversation not found' });
       }
     } else {
+      const generatedTitle = content.substring(0, 50) + (content.length > 50 ? '...' : '');
+      
       conversation = await prisma.conversation.create({
         data: {
           userId: req.user.id,
-          title: content.substring(0, 50) + (content.length > 50 ? '...' : '')
+          title: generatedTitle
         }
       });
     }
@@ -93,8 +89,16 @@ router.get('/stream', async (req, res) => {
     res.write(`data: ${JSON.stringify({
       type: 'start',
       userMessage,
-      conversationId: conversation.id
+      conversation: {
+        id: conversation.id,
+        title: conversation.title,
+        createdAt: conversation.createdAt,
+        updatedAt: conversation.updatedAt
+      }
     })}\n\n`);
+
+    // Small delay to ensure frontend is ready
+    await new Promise(resolve => setTimeout(resolve, 100));
 
     const conversationMessages = await prisma.message.findMany({
       where: { conversationId: conversation.id },

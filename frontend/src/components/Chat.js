@@ -9,7 +9,10 @@ import {
   LogOut, 
   User, 
   Send,
-  Trash2
+  Trash2,
+  Search,
+  Paperclip,
+  Download
 } from 'lucide-react';
 import './Chat.css';
 
@@ -18,10 +21,13 @@ const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3002';
 function Chat({ setIsAuthenticated }) {
   const { isDarkMode, toggleTheme } = useTheme();
   const [conversations, setConversations] = useState([]);
+  const [filteredConversations, setFilteredConversations] = useState([]);
   const [currentConversation, setCurrentConversation] = useState(null);
   const [messages, setMessages] = useState([]);
   const [inputMessage, setInputMessage] = useState('');
   const [loading, setLoading] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [isStreaming, setIsStreaming] = useState(false);
   const messagesEndRef = useRef(null);
 
   const scrollToBottom = () => {
@@ -37,10 +43,19 @@ function Chat({ setIsAuthenticated }) {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (currentConversation) {
+    if (currentConversation && !isStreaming) {
       loadMessages(currentConversation.id);
     }
   }, [currentConversation]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    // Re-apply search filter when conversations change
+    if (!searchQuery) {
+      setFilteredConversations(conversations);
+    } else {
+      searchConversations(searchQuery);
+    }
+  }, [conversations]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const getAuthHeaders = () => {
     const token = localStorage.getItem('token');
@@ -53,6 +68,7 @@ function Chat({ setIsAuthenticated }) {
         headers: getAuthHeaders()
       });
       setConversations(response.data);
+      setFilteredConversations(response.data);
       if (response.data.length > 0 && !currentConversation) {
         setCurrentConversation(response.data[0]);
       }
@@ -62,6 +78,50 @@ function Chat({ setIsAuthenticated }) {
         handleLogout();
       }
     }
+  };
+
+  const searchConversations = (query) => {
+    setSearchQuery(query);
+    if (!query.trim()) {
+      setFilteredConversations(conversations);
+    } else {
+      const filtered = conversations.filter(conv => {
+        // Search in conversation title
+        if (conv.title && conv.title.toLowerCase().includes(query.toLowerCase())) {
+          return true;
+        }
+        
+        // Search in conversation messages (if loaded)
+        if (conv.messages && conv.messages.length > 0) {
+          return conv.messages.some(msg => 
+            msg.content.toLowerCase().includes(query.toLowerCase())
+          );
+        }
+        
+        return false;
+      });
+      setFilteredConversations(filtered);
+    }
+  };
+
+  const exportConversations = () => {
+    const dataToExport = conversations.map(conv => ({
+      id: conv.id,
+      title: conv.title,
+      createdAt: conv.createdAt,
+      updatedAt: conv.updatedAt,
+      messages: messages.filter(msg => msg.conversationId === conv.id)
+    }));
+
+    const dataStr = JSON.stringify(dataToExport, null, 2);
+    const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
+    
+    const exportFileDefaultName = `chatgpt-conversations-${new Date().toISOString().split('T')[0]}.json`;
+    
+    const linkElement = document.createElement('a');
+    linkElement.setAttribute('href', dataUri);
+    linkElement.setAttribute('download', exportFileDefaultName);
+    linkElement.click();
   };
 
   const loadMessages = async (conversationId) => {
@@ -83,21 +143,10 @@ function Chat({ setIsAuthenticated }) {
     setIsAuthenticated(false);
   };
 
-  const createNewConversation = async () => {
-    try {
-      const response = await axios.post(`${API_URL}/api/conversations`, {}, {
-        headers: getAuthHeaders()
-      });
-      const newConversation = response.data;
-      setConversations([newConversation, ...conversations]);
-      setCurrentConversation(newConversation);
-      setMessages([]);
-    } catch (error) {
-      console.error('Error creating conversation:', error);
-      if (error.response?.status === 401) {
-        handleLogout();
-      }
-    }
+  const startNewConversation = () => {
+    // Just clear the current conversation - new one will be created when user sends first message
+    setCurrentConversation(null);
+    setMessages([]);
   };
 
   const deleteConversation = async (conversationId, e) => {
@@ -115,6 +164,10 @@ function Chat({ setIsAuthenticated }) {
       // Remove from conversations list
       const updatedConversations = conversations.filter(conv => conv.id !== conversationId);
       setConversations(updatedConversations);
+      setFilteredConversations(updatedConversations.filter(conv => 
+        !searchQuery || 
+        (conv.title && conv.title.toLowerCase().includes(searchQuery.toLowerCase()))
+      ));
       
       // If we deleted the current conversation, switch to another one or clear
       if (currentConversation?.id === conversationId) {
@@ -140,6 +193,7 @@ function Chat({ setIsAuthenticated }) {
     const messageContent = inputMessage.trim();
     setInputMessage('');
     setLoading(true);
+    setIsStreaming(true);
 
     const tempUserMessage = {
       id: `temp-${Date.now()}`,
@@ -159,6 +213,8 @@ function Chat({ setIsAuthenticated }) {
       createdAt: new Date(),
       streaming: true
     };
+    
+    // Add the streaming message immediately
     setMessages(prev => [...prev, streamingMessage]);
 
     try {
@@ -176,22 +232,27 @@ function Chat({ setIsAuthenticated }) {
         
         switch (data.type) {
           case 'start':
-            // Replace temp user message with real one
+            // Replace temp user message with real one, but keep the streaming message
             setMessages(prev => {
-              const filtered = prev.filter(msg => msg.id !== tempUserMessage.id);
-              return [...filtered.slice(0, -1), data.userMessage, streamingMessage];
+              const withoutTempUser = prev.filter(msg => msg.id !== tempUserMessage.id);
+              const withoutStreamingAtEnd = withoutTempUser.slice(0, -1);
+              const newMessages = [...withoutStreamingAtEnd, data.userMessage, streamingMessage];
+              return newMessages;
             });
             
-            if (!currentConversation || currentConversation.id !== data.conversationId) {
-              loadConversations().then(() => {
-                const newConv = conversations.find(c => c.id === data.conversationId);
-                if (newConv) setCurrentConversation(newConv);
-              });
+            if (!currentConversation || currentConversation.id !== data.conversation.id) {
+              // Set the new conversation as current immediately
+              setCurrentConversation(data.conversation);
+              
+              // Add the new conversation to the lists immediately
+              const updatedConversations = [data.conversation, ...conversations];
+              setConversations(updatedConversations);
+              
+              // Update filtered conversations - the useEffect will handle the search filtering
             }
             break;
             
           case 'chunk':
-            // Append content to streaming message
             setMessages(prev => prev.map(msg => 
               msg.id === streamingMessageId 
                 ? { ...msg, content: msg.content + data.content }
@@ -208,6 +269,7 @@ function Chat({ setIsAuthenticated }) {
             ));
             eventSource.close();
             setLoading(false);
+            setIsStreaming(false);
             break;
             
           case 'error':
@@ -221,6 +283,7 @@ function Chat({ setIsAuthenticated }) {
             setMessages(prev => [...prev, errorMessage]);
             eventSource.close();
             setLoading(false);
+            setIsStreaming(false);
             break;
             
           default:
@@ -243,7 +306,9 @@ function Chat({ setIsAuthenticated }) {
         
         eventSource.close();
         setLoading(false);
+        setIsStreaming(false);
       };
+
 
     } catch (error) {
       console.error('Error setting up streaming:', error);
@@ -257,6 +322,7 @@ function Chat({ setIsAuthenticated }) {
       };
       setMessages(prev => [...prev, errorMessage]);
       setLoading(false);
+      setIsStreaming(false);
     }
   };
 
@@ -264,30 +330,47 @@ function Chat({ setIsAuthenticated }) {
     <div className="chat-container">
       <div className="sidebar">
         <div className="sidebar-header">
-          <button onClick={createNewConversation} className="new-chat-btn">
+          <button onClick={startNewConversation} className="new-chat-btn">
             <Plus size={16} />
             New chat
           </button>
+          
+          <div className="search-container">
+            <Search size={16} className="search-icon" />
+            <input
+              type="text"
+              placeholder="Search conversations..."
+              value={searchQuery}
+              onChange={(e) => searchConversations(e.target.value)}
+              className="search-input"
+            />
+          </div>
         </div>
         
         <div className="conversations-list">
-          {conversations.map(conv => (
-            <div
-              key={conv.id}
-              className={`conversation-item ${currentConversation?.id === conv.id ? 'active' : ''}`}
-              onClick={() => setCurrentConversation(conv)}
-            >
-              <MessageCircle size={16} />
-              <span className="conversation-title">{conv.title || 'New Conversation'}</span>
-              <button
-                className="delete-conversation-btn"
-                onClick={(e) => deleteConversation(conv.id, e)}
-                title="Delete conversation"
+          {filteredConversations.length > 0 ? (
+            filteredConversations.map(conv => (
+              <div
+                key={conv.id}
+                className={`conversation-item ${currentConversation?.id === conv.id ? 'active' : ''}`}
+                onClick={() => setCurrentConversation(conv)}
               >
-                <Trash2 size={14} />
-              </button>
+                <MessageCircle size={16} />
+                <span className="conversation-title">{conv.title || 'New Conversation'}</span>
+                <button
+                  className="delete-conversation-btn"
+                  onClick={(e) => deleteConversation(conv.id, e)}
+                  title="Delete conversation"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            ))
+          ) : searchQuery ? (
+            <div className="no-results">
+              <p>No conversations found</p>
             </div>
-          ))}
+          ) : null}
         </div>
 
         <div className="sidebar-footer">

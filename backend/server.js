@@ -9,7 +9,10 @@ const app = express();
 const PORT = process.env.PORT || 3002;
 
 app.use(helmet());
-app.use(cors());
+app.use(cors({
+  origin: ['http://localhost:3000', 'http://localhost:3001'], // Add your frontend origins
+  credentials: true
+}));
 app.use(morgan('combined'));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));

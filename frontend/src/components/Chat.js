@@ -105,28 +105,104 @@ function Chat({ setIsAuthenticated }) {
 
     setMessages(prev => [...prev, tempUserMessage]);
 
+    // Add streaming assistant message placeholder
+    const streamingMessageId = `streaming-${Date.now()}`;
+    const streamingMessage = {
+      id: streamingMessageId,
+      content: '',
+      role: 'assistant',
+      createdAt: new Date(),
+      streaming: true
+    };
+    setMessages(prev => [...prev, streamingMessage]);
+
     try {
-      const response = await axios.post(`${API_URL}/api/messages`, {
-        conversationId: currentConversation?.id,
-        content: messageContent
-      }, {
-        headers: getAuthHeaders()
-      });
+      // Create EventSource for streaming
+      const eventSource = new EventSource(
+        `${API_URL}/api/messages/stream?${new URLSearchParams({
+          conversationId: currentConversation?.id || '',
+          content: messageContent,
+          authorization: `Bearer ${localStorage.getItem('token')}`
+        })}`
+      );
 
-      const { userMessage, assistantMessage, conversationId } = response.data;
+      eventSource.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        
+        switch (data.type) {
+          case 'start':
+            // Replace temp user message with real one
+            setMessages(prev => {
+              const filtered = prev.filter(msg => msg.id !== tempUserMessage.id);
+              return [...filtered.slice(0, -1), data.userMessage, streamingMessage];
+            });
+            
+            if (!currentConversation || currentConversation.id !== data.conversationId) {
+              loadConversations().then(() => {
+                const newConv = conversations.find(c => c.id === data.conversationId);
+                if (newConv) setCurrentConversation(newConv);
+              });
+            }
+            break;
+            
+          case 'chunk':
+            // Append content to streaming message
+            setMessages(prev => prev.map(msg => 
+              msg.id === streamingMessageId 
+                ? { ...msg, content: msg.content + data.content }
+                : msg
+            ));
+            break;
+            
+          case 'complete':
+            // Replace streaming message with final message
+            setMessages(prev => prev.map(msg => 
+              msg.id === streamingMessageId 
+                ? { ...data.assistantMessage, streaming: false }
+                : msg
+            ));
+            eventSource.close();
+            setLoading(false);
+            break;
+            
+          case 'error':
+            setMessages(prev => prev.filter(msg => msg.id !== streamingMessageId));
+            const errorMessage = {
+              id: `error-${Date.now()}`,
+              content: 'Sorry, I encountered an error. Please try again.',
+              role: 'assistant',
+              createdAt: new Date()
+            };
+            setMessages(prev => [...prev, errorMessage]);
+            eventSource.close();
+            setLoading(false);
+            break;
+            
+          default:
+            console.warn('Unknown message type:', data.type);
+            break;
+        }
+      };
 
-      setMessages(prev => prev.filter(msg => msg.id !== tempUserMessage.id));
-      setMessages(prev => [...prev, userMessage, assistantMessage]);
-
-      if (!currentConversation || currentConversation.id !== conversationId) {
-        await loadConversations();
-        const newConv = conversations.find(c => c.id === conversationId);
-        if (newConv) setCurrentConversation(newConv);
-      }
+      eventSource.onerror = (error) => {
+        console.error('EventSource error:', error);
+        setMessages(prev => prev.filter(msg => msg.id !== streamingMessageId));
+        
+        const errorMessage = {
+          id: `error-${Date.now()}`,
+          content: 'Sorry, I encountered an error. Please try again.',
+          role: 'assistant',
+          createdAt: new Date()
+        };
+        setMessages(prev => [...prev, errorMessage]);
+        
+        eventSource.close();
+        setLoading(false);
+      };
 
     } catch (error) {
-      console.error('Error sending message:', error);
-      setMessages(prev => prev.filter(msg => msg.id !== tempUserMessage.id));
+      console.error('Error setting up streaming:', error);
+      setMessages(prev => prev.filter(msg => msg.id !== tempUserMessage.id && msg.id !== streamingMessageId));
       
       const errorMessage = {
         id: `error-${Date.now()}`,
@@ -135,12 +211,8 @@ function Chat({ setIsAuthenticated }) {
         createdAt: new Date()
       };
       setMessages(prev => [...prev, errorMessage]);
-
-      if (error.response?.status === 401) {
-        handleLogout();
-      }
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   return (
@@ -173,10 +245,11 @@ function Chat({ setIsAuthenticated }) {
             <div key={message.id} className={`message ${message.role}`}>
               <div className="message-content">
                 {message.content}
+                {message.streaming && <span className="streaming-cursor">|</span>}
               </div>
             </div>
           ))}
-          {loading && (
+          {loading && !messages.some(msg => msg.streaming) && (
             <div className="message assistant">
               <div className="message-content">
                 <div className="typing-indicator">Thinking...</div>

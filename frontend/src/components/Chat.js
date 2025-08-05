@@ -8,7 +8,8 @@ import {
   Moon, 
   LogOut, 
   User, 
-  Send 
+  Send,
+  Trash2
 } from 'lucide-react';
 import './Chat.css';
 
@@ -93,6 +94,39 @@ function Chat({ setIsAuthenticated }) {
       setMessages([]);
     } catch (error) {
       console.error('Error creating conversation:', error);
+      if (error.response?.status === 401) {
+        handleLogout();
+      }
+    }
+  };
+
+  const deleteConversation = async (conversationId, e) => {
+    e.stopPropagation(); // Prevent selecting the conversation when clicking delete
+    
+    if (!window.confirm('Are you sure you want to delete this conversation?')) {
+      return;
+    }
+
+    try {
+      await axios.delete(`${API_URL}/api/conversations/${conversationId}`, {
+        headers: getAuthHeaders()
+      });
+      
+      // Remove from conversations list
+      const updatedConversations = conversations.filter(conv => conv.id !== conversationId);
+      setConversations(updatedConversations);
+      
+      // If we deleted the current conversation, switch to another one or clear
+      if (currentConversation?.id === conversationId) {
+        if (updatedConversations.length > 0) {
+          setCurrentConversation(updatedConversations[0]);
+        } else {
+          setCurrentConversation(null);
+          setMessages([]);
+        }
+      }
+    } catch (error) {
+      console.error('Error deleting conversation:', error);
       if (error.response?.status === 401) {
         handleLogout();
       }
@@ -245,6 +279,13 @@ function Chat({ setIsAuthenticated }) {
             >
               <MessageCircle size={16} />
               <span className="conversation-title">{conv.title || 'New Conversation'}</span>
+              <button
+                className="delete-conversation-btn"
+                onClick={(e) => deleteConversation(conv.id, e)}
+                title="Delete conversation"
+              >
+                <Trash2 size={14} />
+              </button>
             </div>
           ))}
         </div>

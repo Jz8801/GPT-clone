@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import './Chat.css';
 
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3002';
+
 function Chat({ setIsAuthenticated }) {
   const [conversations, setConversations] = useState([]);
   const [currentConversation, setCurrentConversation] = useState(null);
@@ -18,6 +20,52 @@ function Chat({ setIsAuthenticated }) {
     scrollToBottom();
   }, [messages]);
 
+  useEffect(() => {
+    loadConversations();
+  }, []);
+
+  useEffect(() => {
+    if (currentConversation) {
+      loadMessages(currentConversation.id);
+    }
+  }, [currentConversation]);
+
+  const getAuthHeaders = () => {
+    const token = localStorage.getItem('token');
+    return { Authorization: `Bearer ${token}` };
+  };
+
+  const loadConversations = async () => {
+    try {
+      const response = await axios.get(`${API_URL}/api/conversations`, {
+        headers: getAuthHeaders()
+      });
+      setConversations(response.data);
+      if (response.data.length > 0 && !currentConversation) {
+        setCurrentConversation(response.data[0]);
+      }
+    } catch (error) {
+      console.error('Error loading conversations:', error);
+      if (error.response?.status === 401) {
+        handleLogout();
+      }
+    }
+  };
+
+  const loadMessages = async (conversationId) => {
+    try {
+      const response = await axios.get(`${API_URL}/api/messages/${conversationId}`, {
+        headers: getAuthHeaders()
+      });
+      setMessages(response.data);
+    } catch (error) {
+      console.error('Error loading messages:', error);
+      if (error.response?.status === 401) {
+        handleLogout();
+      }
+    }
+  };
+
   const handleLogout = () => {
     localStorage.removeItem('token');
     setIsAuthenticated(false);
@@ -25,9 +73,8 @@ function Chat({ setIsAuthenticated }) {
 
   const createNewConversation = async () => {
     try {
-      const token = localStorage.getItem('token');
-      const response = await axios.post('http://localhost:3002/api/conversations', {}, {
-        headers: { Authorization: `Bearer ${token}` }
+      const response = await axios.post(`${API_URL}/api/conversations`, {}, {
+        headers: getAuthHeaders()
       });
       const newConversation = response.data;
       setConversations([newConversation, ...conversations]);
@@ -35,6 +82,9 @@ function Chat({ setIsAuthenticated }) {
       setMessages([]);
     } catch (error) {
       console.error('Error creating conversation:', error);
+      if (error.response?.status === 401) {
+        handleLogout();
+      }
     }
   };
 
@@ -42,43 +92,53 @@ function Chat({ setIsAuthenticated }) {
     e.preventDefault();
     if (!inputMessage.trim() || loading) return;
 
-    const userMessage = {
-      id: Date.now(),
-      content: inputMessage,
-      role: 'user',
-      timestamp: new Date()
-    };
-
-    setMessages(prev => [...prev, userMessage]);
+    const messageContent = inputMessage.trim();
     setInputMessage('');
     setLoading(true);
 
+    const tempUserMessage = {
+      id: `temp-${Date.now()}`,
+      content: messageContent,
+      role: 'user',
+      createdAt: new Date()
+    };
+
+    setMessages(prev => [...prev, tempUserMessage]);
+
     try {
-      const token = localStorage.getItem('token');
-      const response = await axios.post('http://localhost:3002/api/messages', {
+      const response = await axios.post(`${API_URL}/api/messages`, {
         conversationId: currentConversation?.id,
-        content: inputMessage
+        content: messageContent
       }, {
-        headers: { Authorization: `Bearer ${token}` }
+        headers: getAuthHeaders()
       });
 
-      const aiMessage = {
-        id: Date.now() + 1,
-        content: response.data.content,
-        role: 'assistant',
-        timestamp: new Date()
-      };
+      const { userMessage, assistantMessage, conversationId } = response.data;
 
-      setMessages(prev => [...prev, aiMessage]);
+      setMessages(prev => prev.filter(msg => msg.id !== tempUserMessage.id));
+      setMessages(prev => [...prev, userMessage, assistantMessage]);
+
+      if (!currentConversation || currentConversation.id !== conversationId) {
+        await loadConversations();
+        const newConv = conversations.find(c => c.id === conversationId);
+        if (newConv) setCurrentConversation(newConv);
+      }
+
     } catch (error) {
       console.error('Error sending message:', error);
+      setMessages(prev => prev.filter(msg => msg.id !== tempUserMessage.id));
+      
       const errorMessage = {
-        id: Date.now() + 1,
+        id: `error-${Date.now()}`,
         content: 'Sorry, I encountered an error. Please try again.',
         role: 'assistant',
-        timestamp: new Date()
+        createdAt: new Date()
       };
       setMessages(prev => [...prev, errorMessage]);
+
+      if (error.response?.status === 401) {
+        handleLogout();
+      }
     }
     setLoading(false);
   };

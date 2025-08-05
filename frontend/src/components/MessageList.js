@@ -1,5 +1,5 @@
 import React, { useRef, useEffect } from 'react';
-import { User } from 'lucide-react';
+import { User, Bot } from 'lucide-react';
 
 function MessageList({ messages, loading }) {
   const messagesEndRef = useRef(null);
@@ -32,7 +32,7 @@ function MessageList({ messages, loading }) {
               {message.role === 'user' ? (
                 <User size={20} />
               ) : (
-                <div className="ai-avatar">AI</div>
+                <Bot size={20} />
               )}
             </div>
             <div className="message-text">
@@ -46,7 +46,7 @@ function MessageList({ messages, loading }) {
         <div className="message-wrapper assistant">
           <div className="message-content">
             <div className="avatar">
-              <div className="ai-avatar">AI</div>
+              <Bot size={20} />
             </div>
             <div className="message-text">
               <div className="typing-indicator">

@@ -7,6 +7,7 @@ A full-stack ChatGPT-like application built with React, Node.js, and OpenAI API.
 - **Real-time Chat**: Streaming responses from OpenAI's GPT models
 - **File Upload Support**: Upload and analyze documents (PDF, Word, text files)
 - **Conversation Management**: Create, organize, and delete conversations
+- **Conversation Export**: Export conversations in JSON, Plain Text, or Markdown formats
 - **User Authentication**: Secure login/signup with JWT tokens
 - **Search Functionality**: Search through conversation history
 - **Dark/Light Theme**: Toggle between themes
@@ -130,6 +131,7 @@ Body: { "email": "user@example.com", "password": "password" }
 GET    /api/conversations           # List user conversations
 POST   /api/conversations           # Create new conversation
 DELETE /api/conversations/:id       # Delete conversation
+GET    /api/conversations/:id/export?format=json|txt|md  # Export conversation
 ```
 
 ### Message Endpoints
@@ -157,6 +159,95 @@ The streaming endpoints return Server-Sent Events with the following event types
 
 // Error handling
 { type: 'error', error: "error message" }
+```
+
+## 📤 Export Feature
+
+### Export Formats
+
+The application supports exporting conversations in multiple formats:
+
+**JSON Format:**
+- Complete structured data with metadata
+- Includes conversation details and all messages
+- Suitable for data backup and processing
+
+**Plain Text Format:**
+- Human-readable format with timestamps
+- Clean layout for sharing or documentation
+- Includes conversation metadata
+
+**Markdown Format:**
+- Formatted with proper headings and structure
+- Great for documentation and sharing
+- Supports rich text rendering
+
+### Using Export Feature
+
+1. **Via UI**: Hover over any conversation in the sidebar and click the download icon
+2. **Via API**: `GET /api/conversations/:id/export?format=json|txt|md`
+
+### Export File Examples
+
+**JSON Export:**
+```json
+{
+  "conversation": {
+    "id": "conv_123",
+    "title": "My Chat",
+    "createdAt": "2024-01-01T12:00:00Z",
+    "exportedAt": "2024-01-15T10:30:00Z",
+    "messageCount": 4
+  },
+  "messages": [
+    {
+      "id": "msg_1",
+      "role": "user", 
+      "content": "Hello!",
+      "createdAt": "2024-01-01T12:00:00Z"
+    }
+  ]
+}
+```
+
+**Text Export:**
+```
+Conversation: My Chat
+Created: January 1, 2024 at 12:00:00 PM EST
+Exported: January 15, 2024 at 10:30:00 AM EST
+Messages: 4
+==================================================
+
+[You - January 1, 2024 at 12:00:00 PM EST]
+Hello!
+
+------------------------------
+
+[Assistant - January 1, 2024 at 12:00:15 PM EST]
+Hello! How can I help you today?
+```
+
+**Markdown Export:**
+```markdown
+# My Chat
+
+**Created:** January 1, 2024 at 12:00:00 PM EST  
+**Exported:** January 15, 2024 at 10:30:00 AM EST  
+**Messages:** 4  
+
+---
+
+## 👤 **You**
+*January 1, 2024 at 12:00:00 PM EST*
+
+Hello!
+
+---
+
+## 🤖 **Assistant**
+*January 1, 2024 at 12:00:15 PM EST*
+
+Hello! How can I help you today?
 ```
 
 ## 🛠️ Development Guide

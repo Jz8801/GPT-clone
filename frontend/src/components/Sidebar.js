@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useTheme } from '../contexts/ThemeContext';
+import ExportModal from './ExportModal';
 import { 
   Plus, 
   MessageCircle, 
@@ -7,7 +8,8 @@ import {
   Moon, 
   LogOut, 
   Trash2,
-  Search
+  Search,
+  Download
 } from 'lucide-react';
 
 function Sidebar({ 
@@ -19,9 +21,28 @@ function Sidebar({
   onSearchChange, 
   onConversationSelect, 
   onDeleteConversation, 
+  onExportConversation,
   onLogout 
 }) {
   const { isDarkMode, toggleTheme } = useTheme();
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [conversationToExport, setConversationToExport] = useState(null);
+  const [isExporting, setIsExporting] = useState(false);
+
+  const handleExportClick = (conversation, e) => {
+    e.stopPropagation();
+    setConversationToExport(conversation);
+    setExportModalOpen(true);
+  };
+
+  const handleExport = async (conversationId, format, conversation) => {
+    setIsExporting(true);
+    try {
+      await onExportConversation(conversationId, format, conversation);
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   return (
     <div className="sidebar">
@@ -53,13 +74,22 @@ function Sidebar({
             >
               <MessageCircle size={16} />
               <span className="conversation-title">{conv.title || 'New Conversation'}</span>
-              <button
-                className="delete-conversation-btn"
-                onClick={(e) => onDeleteConversation(conv.id, e)}
-                title="Delete conversation"
-              >
-                <Trash2 size={14} />
-              </button>
+              <div className="conversation-actions">
+                <button
+                  className="export-conversation-btn"
+                  onClick={(e) => handleExportClick(conv, e)}
+                  title="Export conversation"
+                >
+                  <Download size={14} />
+                </button>
+                <button
+                  className="delete-conversation-btn"
+                  onClick={(e) => onDeleteConversation(conv.id, e)}
+                  title="Delete conversation"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
             </div>
           ))
         ) : searchQuery ? (
@@ -78,6 +108,18 @@ function Sidebar({
           <LogOut size={16} />
         </button>
       </div>
+
+      {/* Export Modal */}
+      <ExportModal
+        isOpen={exportModalOpen}
+        onClose={() => {
+          setExportModalOpen(false);
+          setConversationToExport(null);
+        }}
+        onExport={handleExport}
+        conversation={conversationToExport}
+        isExporting={isExporting}
+      />
     </div>
   );
 }

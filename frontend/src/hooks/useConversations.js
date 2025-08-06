@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
+import { downloadFromUrl, generateSafeFilename, showDownloadSuccess, showDownloadError } from '../utils/fileDownload';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3002';
 
@@ -92,6 +93,39 @@ export function useConversations(onLogout) {
     setCurrentConversation(null);
   };
 
+  /**
+   * Export a conversation in the specified format
+   * @param {string} conversationId - The conversation ID to export
+   * @param {string} format - The export format (json, txt, md)
+   * @param {Object} conversation - The conversation object (for filename generation)
+   */
+  const exportConversation = async (conversationId, format = 'json', conversation = null) => {
+    try {
+      // Find conversation object if not provided
+      const conv = conversation || conversations.find(c => c.id === conversationId);
+      if (!conv) {
+        throw new Error('Conversation not found');
+      }
+
+      const exportUrl = `${API_URL}/api/conversations/${conversationId}/export?format=${format}`;
+      const filename = generateSafeFilename(conv.title, format);
+
+      await downloadFromUrl(exportUrl, filename);
+      showDownloadSuccess(filename);
+      
+      return true;
+    } catch (error) {
+      console.error('Export conversation error:', error);
+      showDownloadError(error.message);
+      
+      if (error.message.includes('401') || error.message.includes('status: 401')) {
+        onLogout();
+      }
+      
+      throw error;
+    }
+  };
+
 
   useEffect(() => {
     loadConversations();
@@ -114,6 +148,7 @@ export function useConversations(onLogout) {
     setConversations,
     searchConversations,
     deleteConversation,
-    startNewConversation
+    startNewConversation,
+    exportConversation
   };
 }

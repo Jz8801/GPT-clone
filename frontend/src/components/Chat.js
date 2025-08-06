@@ -24,7 +24,8 @@ function Chat({ setIsAuthenticated }) {
     setConversations,
     searchConversations,
     deleteConversation,
-    startNewConversation
+    startNewConversation,
+    exportConversation
   } = useConversations(handleLogout);
 
   const handleConversationUpdate = (newConversation) => {
@@ -53,6 +54,7 @@ function Chat({ setIsAuthenticated }) {
         onSearchChange={searchConversations}
         onConversationSelect={setCurrentConversation}
         onDeleteConversation={deleteConversation}
+        onExportConversation={exportConversation}
         onLogout={handleLogout}
       />
       

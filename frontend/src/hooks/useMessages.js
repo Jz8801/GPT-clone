@@ -27,9 +27,9 @@ export function useMessages(currentConversation, setIsStreaming, onLogout, onCon
     }
   };
 
-  const sendMessage = async (e) => {
+  const sendMessage = async (e, attachedFile = null) => {
     e.preventDefault();
-    if (!inputMessage.trim() || loading) return;
+    if ((!inputMessage.trim() && !attachedFile) || loading) return;
 
     const messageContent = inputMessage.trim();
     setInputMessage('');
@@ -57,17 +57,98 @@ export function useMessages(currentConversation, setIsStreaming, onLogout, onCon
     setMessages(prev => [...prev, streamingMessage]);
 
     try {
-      const eventSource = new EventSource(
-        `${API_URL}/api/messages/stream?${new URLSearchParams({
+      let eventSource;
+
+      if (attachedFile) {
+        // For file uploads, use POST to avoid URL length limitations
+        const response = await fetch(`${API_URL}/api/messages/stream`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${localStorage.getItem('token')}`
+          },
+          body: JSON.stringify({
+            conversationId: currentConversation?.id || '',
+            content: messageContent,
+            hasFile: true,
+            filename: attachedFile.filename,
+            mimetype: attachedFile.mimetype,
+            fileData: attachedFile.base64Data
+          })
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error('Backend error:', errorText);
+          throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
+        }
+
+        // Create a reader for the streaming response
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+
+        const processStream = async () => {
+          try {
+            // Set up a timeout for file uploads (5 minutes)
+            const timeoutId = setTimeout(() => {
+              reader.cancel();
+              handleStreamError('Request timeout. The file may be too large or the server is experiencing high load.');
+            }, 300000);
+
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) {
+                clearTimeout(timeoutId);
+                break;
+              }
+
+              const chunk = decoder.decode(value);
+              const lines = chunk.split('\n');
+
+              for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                  const data = JSON.parse(line.slice(6));
+                  handleEventData(data);
+                  
+                  // Clear timeout on successful data reception
+                  if (data.type === 'complete' || data.type === 'error') {
+                    clearTimeout(timeoutId);
+                  }
+                }
+              }
+            }
+          } catch (error) {
+            console.error('Stream reading error:', error);
+            handleStreamError(error.message);
+          }
+        };
+
+        processStream();
+      } else {
+        // For text-only messages, use GET with EventSource
+        const params = {
           conversationId: currentConversation?.id || '',
           content: messageContent,
           authorization: `Bearer ${localStorage.getItem('token')}`
-        })}`
-      );
+        };
 
-      eventSource.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        
+        eventSource = new EventSource(
+          `${API_URL}/api/messages/stream?${new URLSearchParams(params)}`
+        );
+
+        eventSource.onmessage = (event) => {
+          const data = JSON.parse(event.data);
+          handleEventData(data);
+        };
+
+        eventSource.onerror = (error) => {
+          console.error('EventSource error:', error);
+          handleStreamError();
+          eventSource.close();
+        };
+      }
+
+      const handleEventData = (data) => {
         switch (data.type) {
           case 'start':
             setMessages(prev => {
@@ -96,21 +177,38 @@ export function useMessages(currentConversation, setIsStreaming, onLogout, onCon
                 ? { ...data.assistantMessage, streaming: false }
                 : msg
             ));
-            eventSource.close();
+            if (eventSource) {
+              eventSource.close();
+            }
             setLoading(false);
             setIsStreaming(false);
             break;
             
           case 'error':
             setMessages(prev => prev.filter(msg => msg.id !== streamingMessageId));
+            
+            // Create a more informative error message
+            let errorContent = 'Sorry, I encountered an error. Please try again.';
+            if (data.error) {
+              if (data.error.includes('rate_limit_exceeded') || data.error.includes('Request too large')) {
+                errorContent = 'The file is too large or I\'m currently experiencing high demand. Please try with a smaller file or try again in a few minutes.';
+              } else if (data.error.includes('tokens per min')) {
+                errorContent = 'I\'m currently experiencing high demand. Please try again in a few minutes.';
+              } else {
+                errorContent = `Error: ${data.error}`;
+              }
+            }
+            
             const errorMessage = {
               id: `error-${Date.now()}`,
-              content: 'Sorry, I encountered an error. Please try again.',
+              content: errorContent,
               role: 'assistant',
               createdAt: new Date()
             };
             setMessages(prev => [...prev, errorMessage]);
-            eventSource.close();
+            if (eventSource) {
+              eventSource.close();
+            }
             setLoading(false);
             setIsStreaming(false);
             break;
@@ -121,22 +219,30 @@ export function useMessages(currentConversation, setIsStreaming, onLogout, onCon
         }
       };
 
-      eventSource.onerror = (error) => {
-        console.error('EventSource error:', error);
+      const handleStreamError = (errorInfo = null) => {
         setMessages(prev => prev.filter(msg => msg.id !== streamingMessageId));
+        
+        let errorContent = 'Sorry, I encountered an error. Please try again.';
+        if (errorInfo && typeof errorInfo === 'string') {
+          if (errorInfo.includes('rate_limit_exceeded') || errorInfo.includes('Request too large')) {
+            errorContent = 'The file is too large or I\'m currently experiencing high demand. Please try with a smaller file or try again in a few minutes.';
+          } else if (errorInfo.includes('tokens per min')) {
+            errorContent = 'I\'m currently experiencing high demand. Please try again in a few minutes.';
+          }
+        }
         
         const errorMessage = {
           id: `error-${Date.now()}`,
-          content: 'Sorry, I encountered an error. Please try again.',
+          content: errorContent,
           role: 'assistant',
           createdAt: new Date()
         };
         setMessages(prev => [...prev, errorMessage]);
         
-        eventSource.close();
         setLoading(false);
         setIsStreaming(false);
       };
+
 
     } catch (error) {
       console.error('Error setting up streaming:', error);

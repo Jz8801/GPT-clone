@@ -14,10 +14,10 @@ app.use(cors({
   credentials: true
 }));
 app.use(morgan('combined'));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-const authRateLimit = createRateLimit(15 * 60 * 1000, 5);
+const authRateLimit = createRateLimit(15 * 60 * 1000, 10);
 const messageRateLimit = createRateLimit(60 * 1000, 20);
 
 app.get('/api/health', (req, res) => {

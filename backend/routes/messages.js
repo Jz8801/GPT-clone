@@ -50,7 +50,7 @@ const handleStreamingMessage = async (req, res, isPost = false) => {
 
     // Validate content
     const contentValidation = validateMessageContent(content);
-    if (!contentValidation.isValid && (!hasFile || hasFile !== 'true')) {
+    if (!contentValidation.isValid && (!hasFile || (hasFile !== 'true' && hasFile !== true))) {
       return res.status(400).json({ error: contentValidation.errors[0] });
     }
 

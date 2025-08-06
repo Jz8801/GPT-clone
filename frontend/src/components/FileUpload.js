@@ -111,7 +111,7 @@ const FileUpload = ({ onFileAttached, onClose }) => {
                     <strong>Click to browse</strong> or drag and drop your file here
                   </p>
                   <p className="file-types">
-                    Supported: PDF, Word documents, Text files, CSV, JSON
+                    Supported: PDF, Word (DOC/DOCX), Text (TXT), Markdown (MD), JSON, CSV
                   </p>
                 </>
               )}
@@ -121,7 +121,7 @@ const FileUpload = ({ onFileAttached, onClose }) => {
               type="file"
               ref={fileInputRef}
               onChange={handleFileSelect}
-              accept=".pdf,.docx,.doc,.txt,.csv,.json"
+              accept=".pdf,.docx,.doc,.txt,.csv,.json,.md"
               style={{ display: 'none' }}
             />
 
@@ -134,7 +134,7 @@ const FileUpload = ({ onFileAttached, onClose }) => {
 
             <div className="upload-info">
               <FileText size={16} />
-              <span>Maximum file size: 10MB</span>
+              <span>Maximum file size: 50MB for spreadsheets, 512MB for documents</span>
             </div>
           </>
         )}

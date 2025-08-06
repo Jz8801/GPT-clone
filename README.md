@@ -72,17 +72,71 @@ npm install
 
 ### 2. Database Setup
 
+#### Start PostgreSQL Service
+
+**macOS (Homebrew):**
+```bash
+brew services start postgresql@14
+```
+
+**macOS (pg_ctl):**
+```bash
+pg_ctl -D /usr/local/var/postgres start
+```
+
+**Windows:**
+```bash
+net start postgresql-x64-14
+```
+
+#### Create Database
+
+**Option A: Using createdb command:**
+```bash
+createdb gpt_clone
+```
+
+**Option B: Using psql:**
+```bash
+psql -U postgres
+CREATE DATABASE gpt_clone;
+\q
+```
+
+#### Run Prisma Migrations
+
 ```bash
 cd backend
 
-# Set up PostgreSQL database
-createdb gpt_clone  # or use your preferred method
-
-# Run database migrations
-npx prisma migrate deploy
-
 # Generate Prisma client
 npx prisma generate
+
+# Run migrations (creates tables)
+npx prisma migrate deploy
+
+#### Verify Setup
+
+```bash
+# Check database connection
+npx prisma studio
+
+# Or connect directly
+psql -d gpt_clone -U postgres
+\dt  # List tables
+\q   # Quit
+```
+
+#### Stop PostgreSQL Service (when needed)
+
+```bash
+# macOS (Homebrew)
+brew services stop postgresql@14
+
+# macOS (pg_ctl)
+pg_ctl -D /usr/local/var/postgres stop
+
+# Windows
+net stop postgresql-x64-14
 ```
 
 ### 3. Environment Configuration

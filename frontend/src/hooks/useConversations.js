@@ -92,11 +92,6 @@ export function useConversations(onLogout) {
     setCurrentConversation(null);
   };
 
-  const addNewConversation = (newConversation) => {
-    const updatedConversations = [newConversation, ...conversations];
-    setConversations(updatedConversations);
-    setFilteredConversations(updatedConversations);
-  };
 
   useEffect(() => {
     loadConversations();
@@ -119,8 +114,6 @@ export function useConversations(onLogout) {
     setConversations,
     searchConversations,
     deleteConversation,
-    startNewConversation,
-    addNewConversation,
-    loadConversations
+    startNewConversation
   };
 }

@@ -27,6 +27,10 @@ export function useMessages(currentConversation, setIsStreaming, onLogout, onCon
     }
   };
 
+  /**
+   * Send a message and handle streaming response from the server
+   * Supports both text-only messages (EventSource) and file uploads (fetch with ReadableStream)
+   */
   const sendMessage = async (e, attachedFile = null) => {
     e.preventDefault();
     if ((!inputMessage.trim() && !attachedFile) || loading) return;
@@ -36,6 +40,7 @@ export function useMessages(currentConversation, setIsStreaming, onLogout, onCon
     setLoading(true);
     setIsStreaming(true);
 
+    // Create temporary user message for immediate UI feedback
     const tempUserMessage = {
       id: `temp-${Date.now()}`,
       content: messageContent,
@@ -45,6 +50,7 @@ export function useMessages(currentConversation, setIsStreaming, onLogout, onCon
 
     setMessages(prev => [...prev, tempUserMessage]);
 
+    // Create placeholder streaming message that will be updated with AI response chunks
     const streamingMessageId = `streaming-${Date.now()}`;
     const streamingMessage = {
       id: streamingMessageId,
@@ -87,9 +93,13 @@ export function useMessages(currentConversation, setIsStreaming, onLogout, onCon
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
 
+        /**
+         * Process Server-Sent Events from fetch ReadableStream for file uploads
+         * Handles timeout management and SSE format parsing manually
+         */
         const processStream = async () => {
           try {
-            // Set up a timeout for file uploads (5 minutes)
+            // Set up a 5-minute timeout for file processing (large files take time)
             const timeoutId = setTimeout(() => {
               reader.cancel();
               handleStreamError('Request timeout. The file may be too large or the server is experiencing high load.');
@@ -102,15 +112,17 @@ export function useMessages(currentConversation, setIsStreaming, onLogout, onCon
                 break;
               }
 
+              // Decode binary data to text and parse SSE format
               const chunk = decoder.decode(value);
               const lines = chunk.split('\n');
 
+              // Process each line that contains SSE data
               for (const line of lines) {
                 if (line.startsWith('data: ')) {
-                  const data = JSON.parse(line.slice(6));
+                  const data = JSON.parse(line.slice(6)); // Remove 'data: ' prefix
                   handleEventData(data);
                   
-                  // Clear timeout on successful data reception
+                  // Clear timeout when stream completes or errors
                   if (data.type === 'complete' || data.type === 'error') {
                     clearTimeout(timeoutId);
                   }
@@ -148,9 +160,15 @@ export function useMessages(currentConversation, setIsStreaming, onLogout, onCon
         };
       }
 
+      /**
+       * Handle different types of streaming events from the server
+       * Manages message state transitions and UI updates
+       */
       const handleEventData = (data) => {
         switch (data.type) {
           case 'start':
+            // Replace temporary user message with server-confirmed version
+            // and ensure streaming assistant message is in correct position
             setMessages(prev => {
               const withoutTempUser = prev.filter(msg => msg.id !== tempUserMessage.id);
               const withoutStreamingAtEnd = withoutTempUser.slice(0, -1);
@@ -158,12 +176,14 @@ export function useMessages(currentConversation, setIsStreaming, onLogout, onCon
               return newMessages;
             });
             
+            // Update conversation context if this created a new conversation
             if (!currentConversation || currentConversation.id !== data.conversation.id) {
               onConversationUpdate(data.conversation);
             }
             break;
             
           case 'chunk':
+            // Append incoming text chunks to the streaming message
             setMessages(prev => prev.map(msg => 
               msg.id === streamingMessageId 
                 ? { ...msg, content: msg.content + data.content, streaming: true }
@@ -172,6 +192,7 @@ export function useMessages(currentConversation, setIsStreaming, onLogout, onCon
             break;
             
           case 'complete':
+            // Replace streaming message with final server-confirmed message
             setMessages(prev => prev.map(msg => 
               msg.id === streamingMessageId 
                 ? { ...data.assistantMessage, streaming: false }
@@ -185,9 +206,10 @@ export function useMessages(currentConversation, setIsStreaming, onLogout, onCon
             break;
             
           case 'error':
+            // Remove streaming placeholder and show user-friendly error message
             setMessages(prev => prev.filter(msg => msg.id !== streamingMessageId));
             
-            // Create a more informative error message
+            // Create contextual error messages based on error type
             let errorContent = 'Sorry, I encountered an error. Please try again.';
             if (data.error) {
               if (data.error.includes('rate_limit_exceeded') || data.error.includes('Request too large')) {
@@ -219,9 +241,15 @@ export function useMessages(currentConversation, setIsStreaming, onLogout, onCon
         }
       };
 
+      /**
+       * Handle connection-level streaming errors (network, timeout, etc.)
+       * Provides user-friendly error messages and cleans up UI state
+       */
       const handleStreamError = (errorInfo = null) => {
+        // Remove streaming placeholder message
         setMessages(prev => prev.filter(msg => msg.id !== streamingMessageId));
         
+        // Generate appropriate error message based on error type
         let errorContent = 'Sorry, I encountered an error. Please try again.';
         if (errorInfo && typeof errorInfo === 'string') {
           if (errorInfo.includes('rate_limit_exceeded') || errorInfo.includes('Request too large')) {
@@ -239,6 +267,7 @@ export function useMessages(currentConversation, setIsStreaming, onLogout, onCon
         };
         setMessages(prev => [...prev, errorMessage]);
         
+        // Reset loading states
         setLoading(false);
         setIsStreaming(false);
       };

@@ -1,24 +1,27 @@
 const express = require('express');
-const prisma = require('../lib/prisma');
 const authenticateToken = require('../middleware/auth');
 const { exportConversation, getFormatInfo, generateFilename } = require('../utils/exportFormatters');
+
+// Import utilities
+const {
+  getUserConversations,
+  createConversation,
+  updateConversationTitle,
+  deleteConversation,
+  getConversationWithMessages
+} = require('../utils/conversationUtils');
+
 const router = express.Router();
 
+// Apply authentication middleware to all routes
 router.use(authenticateToken);
 
+/**
+ * GET / - Get all conversations for the authenticated user
+ */
 router.get('/', async (req, res) => {
   try {
-    const conversations = await prisma.conversation.findMany({
-      where: { userId: req.user.id },
-      orderBy: { updatedAt: 'desc' },
-      include: {
-        messages: {
-          take: 1,
-          orderBy: { createdAt: 'desc' }
-        }
-      }
-    });
-
+    const conversations = await getUserConversations(req.user.id);
     res.json(conversations);
   } catch (error) {
     console.error('Get conversations error:', error);
@@ -26,17 +29,14 @@ router.get('/', async (req, res) => {
   }
 });
 
+/**
+ * POST / - Create a new conversation
+ */
 router.post('/', async (req, res) => {
   try {
     const { title } = req.body;
 
-    const conversation = await prisma.conversation.create({
-      data: {
-        title: title || null,
-        userId: req.user.id
-      }
-    });
-
+    const conversation = await createConversation(req.user.id, title);
     res.status(201).json(conversation);
   } catch (error) {
     console.error('Create conversation error:', error);
@@ -44,63 +44,50 @@ router.post('/', async (req, res) => {
   }
 });
 
+/**
+ * PUT /:id - Update conversation title
+ */
 router.put('/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const { title } = req.body;
 
-    const conversation = await prisma.conversation.findFirst({
-      where: { 
-        id: id,
-        userId: req.user.id 
-      }
-    });
-
-    if (!conversation) {
-      return res.status(404).json({ error: 'Conversation not found' });
-    }
-
-    const updatedConversation = await prisma.conversation.update({
-      where: { id: id },
-      data: { title }
-    });
-
+    const updatedConversation = await updateConversationTitle(id, req.user.id, title);
     res.json(updatedConversation);
   } catch (error) {
     console.error('Update conversation error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-router.delete('/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const conversation = await prisma.conversation.findFirst({
-      where: { 
-        id: id,
-        userId: req.user.id 
-      }
-    });
-
-    if (!conversation) {
-      return res.status(404).json({ error: 'Conversation not found' });
+    
+    if (error.message.includes('Conversation not found')) {
+      return res.status(404).json({ error: error.message });
     }
-
-    await prisma.conversation.delete({
-      where: { id: id }
-    });
-
-    res.json({ message: 'Conversation deleted successfully' });
-  } catch (error) {
-    console.error('Delete conversation error:', error);
+    
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
 /**
- * Export conversation in specified format
- * GET /api/conversations/:id/export?format=json|txt|md
+ * DELETE /:id - Delete conversation and all its messages
+ */
+router.delete('/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    await deleteConversation(id, req.user.id);
+    res.json({ message: 'Conversation deleted successfully' });
+  } catch (error) {
+    console.error('Delete conversation error:', error);
+    
+    if (error.message.includes('Conversation not found')) {
+      return res.status(404).json({ error: error.message });
+    }
+    
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * GET /:id/export - Export conversation in specified format
+ * Supports query parameter: ?format=json|txt|md
  */
 router.get('/:id/export', async (req, res) => {
   try {
@@ -116,29 +103,8 @@ router.get('/:id/export', async (req, res) => {
       });
     }
 
-    // Find conversation and verify ownership
-    const conversation = await prisma.conversation.findFirst({
-      where: { 
-        id: id,
-        userId: req.user.id 
-      }
-    });
-
-    if (!conversation) {
-      return res.status(404).json({ error: 'Conversation not found' });
-    }
-
-    // Get all messages for this conversation
-    const messages = await prisma.message.findMany({
-      where: { conversationId: id },
-      orderBy: { createdAt: 'asc' },
-      select: {
-        id: true,
-        content: true,
-        role: true,
-        createdAt: true
-      }
-    });
+    // Get conversation with messages (validates ownership)
+    const { conversation, messages } = await getConversationWithMessages(id, req.user.id);
 
     // Format the conversation data
     const exportedData = exportConversation(conversation, messages, format);
@@ -159,6 +125,11 @@ router.get('/:id/export', async (req, res) => {
 
   } catch (error) {
     console.error('Export conversation error:', error);
+    
+    if (error.message.includes('Conversation not found')) {
+      return res.status(404).json({ error: error.message });
+    }
+    
     res.status(500).json({ error: 'Internal server error' });
   }
 });

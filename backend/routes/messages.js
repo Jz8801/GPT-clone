@@ -1,566 +1,250 @@
 const express = require('express');
 const OpenAI = require('openai');
-const jwt = require('jsonwebtoken');
-const prisma = require('../lib/prisma');
 const authenticateToken = require('../middleware/auth');
+
+// Import utilities
+const { authenticateFromQuery, authenticateFromHeader } = require('../utils/authUtils');
+const { findOrCreateConversation, updateConversationTimestamp } = require('../utils/conversationUtils');
+const { 
+  createUserMessage, 
+  createAssistantMessage, 
+  getConversationMessages, 
+  formatMessagesForOpenAI,
+  validateMessageContent
+} = require('../utils/messageUtils');
+const {
+  handleFileUploadRequest,
+  handleStreamingRequest,
+  handleChatRequest,
+  simulateStreamingFromText,
+  processStreamingResponse,
+  getErrorMessage
+} = require('../utils/openaiUtils');
+const {
+  setupSSEHeaders,
+  sendStartEvent,
+  sendChunkEvent,
+  sendCompleteEvent,
+  sendErrorEvent,
+  addStreamDelay
+} = require('../utils/streamingUtils');
+
 const router = express.Router();
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// Streaming endpoint (before auth middleware to handle custom auth)
+/**
+ * Shared streaming message handler for both GET and POST endpoints
+ * @param {Request} req - Express request object
+ * @param {Response} res - Express response object
+ * @param {boolean} isPost - Whether this is a POST request
+ */
+const handleStreamingMessage = async (req, res, isPost = false) => {
+  try {
+    // Extract parameters based on request type
+    const { conversationId, content, hasFile, filename, mimetype, fileData } = 
+      isPost ? req.body : req.query;
+    const authorization = isPost ? req.headers.authorization : req.query.authorization;
+
+    // Validate content
+    const contentValidation = validateMessageContent(content);
+    if (!contentValidation.isValid && (!hasFile || hasFile !== 'true')) {
+      return res.status(400).json({ error: contentValidation.errors[0] });
+    }
+
+    // Authenticate user
+    const user = isPost 
+      ? await authenticateFromHeader(authorization)
+      : await authenticateFromQuery(authorization);
+    req.user = user;
+
+    // Find or create conversation
+    const conversation = await findOrCreateConversation(conversationId, user.id, content);
+
+    // Create user message
+    const userMessage = await createUserMessage(content, conversation.id, user.id);
+
+    // Set up Server-Sent Events
+    setupSSEHeaders(res);
+
+    // Send initial event
+    sendStartEvent(res, userMessage, conversation);
+
+    // Brief delay to ensure frontend is ready
+    await addStreamDelay(100);
+
+    // Get conversation history
+    const conversationMessages = await getConversationMessages(conversation.id);
+    const openaiMessages = formatMessagesForOpenAI(conversationMessages);
+
+    let fullResponse = '';
+
+    // Handle file upload vs text-only requests
+    const shouldCheckFile = isPost ? hasFile : hasFile === 'true';
+    
+    if (shouldCheckFile && fileData && filename) {
+      // Handle file upload using OpenAI Responses API
+      try {
+        fullResponse = await handleFileUploadRequest(openai, content, true, fileData, filename);
+        
+        // Simulate streaming for consistency
+        await simulateStreamingFromText(fullResponse, async (chunk) => {
+          sendChunkEvent(res, chunk);
+        });
+      } catch (openaiError) {
+        const errorMessage = getErrorMessage(openaiError);
+        sendErrorEvent(res, errorMessage);
+        return;
+      }
+    } else {
+      // Handle regular text streaming
+      try {
+        const stream = await handleStreamingRequest(openai, openaiMessages);
+        fullResponse = await processStreamingResponse(stream, async (chunk) => {
+          sendChunkEvent(res, chunk);
+        });
+      } catch (openaiError) {
+        const errorMessage = getErrorMessage(openaiError);
+        sendErrorEvent(res, errorMessage);
+        return;
+      }
+    }
+
+    // Save assistant response
+    const assistantMessage = await createAssistantMessage(fullResponse, conversation.id, user.id);
+
+    // Update conversation timestamp
+    await updateConversationTimestamp(conversation.id);
+
+    // Send completion event
+    sendCompleteEvent(res, assistantMessage);
+    res.end();
+
+  } catch (error) {
+    console.error('Stream message error:', error);
+    
+    // Handle authentication errors
+    if (error.message.includes('Authorization required') || error.message.includes('Invalid token')) {
+      return res.status(401).json({ error: error.message });
+    }
+    
+    // Handle conversation errors
+    if (error.message.includes('Conversation not found')) {
+      return res.status(404).json({ error: error.message });
+    }
+    
+    // Handle validation errors
+    if (error.message.includes('required') || error.message.includes('invalid')) {
+      return res.status(400).json({ error: error.message });
+    }
+    
+    // Generic error for streaming
+    if (res.headersSent) {
+      sendErrorEvent(res, 'Internal server error');
+    } else {
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+};
+
+/**
+ * GET /stream - EventSource streaming endpoint
+ * Used by frontend EventSource for text-only messages
+ */
 router.get('/stream', async (req, res) => {
-  try {
-    const { conversationId, content, authorization, hasFile, filename, mimetype, fileData } = req.query;
-
-    if (!content || !content.trim()) {
-      return res.status(400).json({ error: 'Message content is required' });
-    }
-
-    // Handle authentication for EventSource
-    if (!authorization) {
-      return res.status(401).json({ error: 'Authorization required' });
-    }
-
-    const token = authorization.replace('Bearer ', '');
-    
-    let user;
-    try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      
-      // Validate user exists in database (matching auth middleware)
-      user = await prisma.user.findUnique({
-        where: { id: decoded.userId },
-        select: { id: true, email: true }
-      });
-
-      if (!user) {
-        return res.status(401).json({ error: 'Invalid token' });
-      }
-    } catch (jwtError) {
-      return res.status(401).json({ error: 'Invalid token' });
-    }
-
-    req.user = user;
-
-    let conversation;
-    if (conversationId) {
-      conversation = await prisma.conversation.findFirst({
-        where: { 
-          id: conversationId,
-          userId: req.user.id 
-        }
-      });
-
-      if (!conversation) {
-        return res.status(404).json({ error: 'Conversation not found' });
-      }
-    } else {
-      const generatedTitle = content.substring(0, 50) + (content.length > 50 ? '...' : '');
-      
-      conversation = await prisma.conversation.create({
-        data: {
-          userId: req.user.id,
-          title: generatedTitle
-        }
-      });
-    }
-
-    const userMessage = await prisma.message.create({
-      data: {
-        content: content.trim(),
-        role: 'user',
-        conversationId: conversation.id,
-        userId: req.user.id
-      }
-    });
-
-    // Set up Server-Sent Events
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Headers': 'Cache-Control'
-    });
-
-    // Send initial data
-    res.write(`data: ${JSON.stringify({
-      type: 'start',
-      userMessage,
-      conversation: {
-        id: conversation.id,
-        title: conversation.title,
-        createdAt: conversation.createdAt,
-        updatedAt: conversation.updatedAt
-      }
-    })}\n\n`);
-
-    // Small delay to ensure frontend is ready
-    await new Promise(resolve => setTimeout(resolve, 100));
-
-    const conversationMessages = await prisma.message.findMany({
-      where: { conversationId: conversation.id },
-      orderBy: { createdAt: 'asc' }
-    });
-
-    const openaiMessages = conversationMessages.map(msg => ({
-      role: msg.role,
-      content: msg.content
-    }));
-
-    let fullResponse = '';
-    let retryCount = 0;
-    const maxRetries = 3;
-
-    while (retryCount < maxRetries) {
-      try {
-        if (hasFile === 'true' && fileData && filename) {
-          // Use OpenAI Responses API for file + text
-          const response = await openai.responses.create({
-            model: "gpt-4o",
-            input: [
-              {
-                role: "user",
-                content: [
-                  {
-                    type: "input_file",
-                    filename: filename,
-                    file_data: fileData
-                  },
-                  {
-                    type: "input_text",
-                    text: content || "Please analyze this file."
-                  }
-                ]
-              }
-            ]
-          });
-
-          fullResponse = response.output_text;
-          
-          // Send the complete response as chunks for consistency with streaming
-          const words = fullResponse.split(' ');
-          for (let i = 0; i < words.length; i++) {
-            const chunk = (i === 0 ? words[i] : ' ' + words[i]);
-            res.write(`data: ${JSON.stringify({
-              type: 'chunk',
-              content: chunk
-            })}\n\n`);
-            // Small delay to simulate streaming
-            await new Promise(resolve => setTimeout(resolve, 50));
-          }
-        } else {
-          // Use regular chat completions for text-only messages
-          const stream = await openai.chat.completions.create({
-            model: "gpt-3.5-turbo",
-            messages: openaiMessages,
-            max_tokens: 500,
-            temperature: 0.7,
-            stream: true,
-          });
-
-          for await (const chunk of stream) {
-            const chunkContent = chunk.choices[0]?.delta?.content || '';
-            if (chunkContent) {
-              fullResponse += chunkContent;
-              res.write(`data: ${JSON.stringify({
-                type: 'chunk',
-                content: chunkContent
-              })}\n\n`);
-            }
-          }
-        }
-        break;
-      } catch (openaiError) {
-        console.error(`OpenAI API error (attempt ${retryCount + 1}):`, openaiError);
-        retryCount++;
-        
-        if (retryCount === maxRetries) {
-          fullResponse = "I'm sorry, I'm experiencing technical difficulties. Please try again later.";
-          res.write(`data: ${JSON.stringify({
-            type: 'chunk',
-            content: fullResponse
-          })}\n\n`);
-        } else {
-          await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
-        }
-      }
-    }
-
-    // Save the complete response to database
-    const assistantMessage = await prisma.message.create({
-      data: {
-        content: fullResponse,
-        role: 'assistant',
-        conversationId: conversation.id,
-        userId: req.user.id
-      }
-    });
-
-    await prisma.conversation.update({
-      where: { id: conversation.id },
-      data: { updatedAt: new Date() }
-    });
-
-    // Send completion event
-    res.write(`data: ${JSON.stringify({
-      type: 'complete',
-      assistantMessage
-    })}\n\n`);
-
-    res.end();
-  } catch (error) {
-    console.error('Stream message error:', error);
-    res.write(`data: ${JSON.stringify({
-      type: 'error',
-      error: 'Internal server error'
-    })}\n\n`);
-    res.end();
-  }
+  await handleStreamingMessage(req, res, false);
 });
 
-// POST endpoint for file uploads with streaming
+/**
+ * POST /stream - Fetch-based streaming endpoint  
+ * Used for file uploads and messages via fetch API
+ */
 router.post('/stream', async (req, res) => {
-  try {
-    const { conversationId, content, hasFile, filename, mimetype, fileData } = req.body;
-
-    if ((!content || !content.trim()) && !hasFile) {
-      return res.status(400).json({ error: 'Message content or file is required' });
-    }
-
-    // Handle authentication for POST requests
-    const authHeader = req.headers.authorization;
-    if (!authHeader) {
-      return res.status(401).json({ error: 'Authorization required' });
-    }
-
-    const token = authHeader.replace('Bearer ', '');
-    
-    let user;
-    try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      
-      // Validate user exists in database (matching auth middleware)
-      user = await prisma.user.findUnique({
-        where: { id: decoded.userId },
-        select: { id: true, email: true }
-      });
-
-      if (!user) {
-        return res.status(401).json({ error: 'Invalid token' });
-      }
-    } catch (jwtError) {
-      return res.status(401).json({ error: 'Invalid token' });
-    }
-
-    req.user = user;
-
-    let conversation;
-    if (conversationId) {
-      conversation = await prisma.conversation.findFirst({
-        where: { 
-          id: conversationId,
-          userId: req.user.id 
-        }
-      });
-
-      if (!conversation) {
-        return res.status(404).json({ error: 'Conversation not found' });
-      }
-    } else {
-      const generatedTitle = content.substring(0, 50) + (content.length > 50 ? '...' : '');
-      
-      conversation = await prisma.conversation.create({
-        data: {
-          userId: req.user.id,
-          title: generatedTitle
-        }
-      });
-    }
-
-    const userMessage = await prisma.message.create({
-      data: {
-        content: content.trim(),
-        role: 'user',
-        conversationId: conversation.id,
-        userId: req.user.id
-      }
-    });
-
-    // Set up Server-Sent Events
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Headers': 'Cache-Control'
-    });
-
-    // Send initial data
-    res.write(`data: ${JSON.stringify({
-      type: 'start',
-      userMessage,
-      conversation: {
-        id: conversation.id,
-        title: conversation.title,
-        createdAt: conversation.createdAt,
-        updatedAt: conversation.updatedAt
-      }
-    })}\n\n`);
-
-    // Small delay to ensure frontend is ready
-    await new Promise(resolve => setTimeout(resolve, 100));
-
-    const conversationMessages = await prisma.message.findMany({
-      where: { conversationId: conversation.id },
-      orderBy: { createdAt: 'asc' }
-    });
-
-    const openaiMessages = conversationMessages.map(msg => ({
-      role: msg.role,
-      content: msg.content
-    }));
-
-    let fullResponse = '';
-    let retryCount = 0;
-    const maxRetries = 3;
-
-    while (retryCount < maxRetries) {
-      try {
-        if (hasFile && fileData && filename) {
-          // Use OpenAI Responses API for file + text
-          const response = await openai.responses.create({
-            model: "gpt-4o",
-            input: [
-              {
-                role: "user",
-                content: [
-                  {
-                    type: "input_file",
-                    filename: filename,
-                    file_data: fileData
-                  },
-                  {
-                    type: "input_text",
-                    text: content || "Please analyze this file."
-                  }
-                ]
-              }
-            ]
-          });
-
-          fullResponse = response.output_text;
-          
-          // Send the complete response as chunks for consistency with streaming
-          const words = fullResponse.split(' ');
-          for (let i = 0; i < words.length; i++) {
-            const chunk = (i === 0 ? words[i] : ' ' + words[i]);
-            res.write(`data: ${JSON.stringify({
-              type: 'chunk',
-              content: chunk
-            })}\n\n`);
-            // Small delay to simulate streaming
-            await new Promise(resolve => setTimeout(resolve, 50));
-          }
-        } else {
-          // Use regular chat completions for text-only messages
-          const stream = await openai.chat.completions.create({
-            model: "gpt-3.5-turbo",
-            messages: openaiMessages,
-            max_tokens: 500,
-            temperature: 0.7,
-            stream: true,
-          });
-
-          for await (const chunk of stream) {
-            const chunkContent = chunk.choices[0]?.delta?.content || '';
-            if (chunkContent) {
-              fullResponse += chunkContent;
-              res.write(`data: ${JSON.stringify({
-                type: 'chunk',
-                content: chunkContent
-              })}\n\n`);
-            }
-          }
-        }
-        break;
-      } catch (openaiError) {
-        console.error(`OpenAI API error (attempt ${retryCount + 1}):`, openaiError);
-        retryCount++;
-        
-        if (retryCount === maxRetries) {
-          // Send error event to frontend instead of trying to continue
-          res.write(`data: ${JSON.stringify({
-            type: 'error',
-            error: openaiError.message || 'OpenAI API error occurred'
-          })}\n\n`);
-          res.end();
-          return;
-        } else {
-          await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
-        }
-      }
-    }
-
-    // Save the complete response to database
-    const assistantMessage = await prisma.message.create({
-      data: {
-        content: fullResponse,
-        role: 'assistant',
-        conversationId: conversation.id,
-        userId: req.user.id
-      }
-    });
-
-    await prisma.conversation.update({
-      where: { id: conversation.id },
-      data: { updatedAt: new Date() }
-    });
-
-    // Send completion event
-    res.write(`data: ${JSON.stringify({
-      type: 'complete',
-      assistantMessage
-    })}\n\n`);
-
-    res.end();
-  } catch (error) {
-    console.error('Stream message error:', error);
-    res.write(`data: ${JSON.stringify({
-      type: 'error',
-      error: 'Internal server error'
-    })}\n\n`);
-    res.end();
-  }
+  await handleStreamingMessage(req, res, true);
 });
 
+// Apply authentication middleware for non-streaming endpoints
 router.use(authenticateToken);
 
+/**
+ * GET /:conversationId - Get all messages for a conversation
+ */
 router.get('/:conversationId', async (req, res) => {
   try {
     const { conversationId } = req.params;
 
-    const conversation = await prisma.conversation.findFirst({
-      where: { 
-        id: conversationId,
-        userId: req.user.id 
-      }
-    });
-
-    if (!conversation) {
-      return res.status(404).json({ error: 'Conversation not found' });
-    }
-
-    const messages = await prisma.message.findMany({
-      where: { conversationId: conversationId },
-      orderBy: { createdAt: 'asc' }
-    });
+    // Validate conversation ownership and get messages
+    const messages = await require('../utils/messageUtils').getMessagesForUser(conversationId, req.user.id);
 
     res.json(messages);
   } catch (error) {
     console.error('Get messages error:', error);
+    
+    if (error.message.includes('Conversation not found')) {
+      return res.status(404).json({ error: error.message });
+    }
+    
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
+/**
+ * POST / - Send message (non-streaming)
+ * Legacy endpoint for non-streaming message sending
+ */
 router.post('/', async (req, res) => {
   try {
     const { conversationId, content } = req.body;
 
-    if (!content || !content.trim()) {
-      return res.status(400).json({ error: 'Message content is required' });
+    // Validate content
+    const contentValidation = validateMessageContent(content);
+    if (!contentValidation.isValid) {
+      return res.status(400).json({ error: contentValidation.errors[0] });
     }
 
-    let conversation;
-    if (conversationId) {
-      conversation = await prisma.conversation.findFirst({
-        where: { 
-          id: conversationId,
-          userId: req.user.id 
-        }
-      });
+    // Find or create conversation
+    const conversation = await findOrCreateConversation(conversationId, req.user.id, content);
 
-      if (!conversation) {
-        return res.status(404).json({ error: 'Conversation not found' });
-      }
-    } else {
-      conversation = await prisma.conversation.create({
-        data: {
-          userId: req.user.id,
-          title: content.substring(0, 50) + (content.length > 50 ? '...' : '')
-        }
-      });
-    }
+    // Create user message
+    const userMessage = await createUserMessage(content, conversation.id, req.user.id);
 
-    const userMessage = await prisma.message.create({
-      data: {
-        content: content.trim(),
-        role: 'user',
-        conversationId: conversation.id,
-        userId: req.user.id
-      }
-    });
+    // Get conversation history and format for OpenAI
+    const conversationMessages = await getConversationMessages(conversation.id);
+    const openaiMessages = formatMessagesForOpenAI(conversationMessages);
 
-    const conversationMessages = await prisma.message.findMany({
-      where: { conversationId: conversation.id },
-      orderBy: { createdAt: 'asc' }
-    });
-
-    const openaiMessages = conversationMessages.map(msg => ({
-      role: msg.role,
-      content: msg.content
-    }));
-
+    // Get AI response
     let aiResponse;
-    let retryCount = 0;
-    const maxRetries = 3;
-
-    while (retryCount < maxRetries) {
-      try {
-        const completion = await openai.chat.completions.create({
-          model: "gpt-3.5-turbo",
-          messages: openaiMessages,
-          max_tokens: 500,
-          temperature: 0.7,
-        });
-
-        aiResponse = completion.choices[0].message.content;
-        break;
-      } catch (openaiError) {
-        console.error(`OpenAI API error (attempt ${retryCount + 1}):`, openaiError);
-        retryCount++;
-        
-        if (retryCount === maxRetries) {
-          aiResponse = "I'm sorry, I'm experiencing technical difficulties. Please try again later.";
-        } else {
-          await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
-        }
-      }
+    try {
+      aiResponse = await handleChatRequest(openai, openaiMessages);
+    } catch (openaiError) {
+      aiResponse = getErrorMessage(openaiError);
     }
 
-    const assistantMessage = await prisma.message.create({
-      data: {
-        content: aiResponse,
-        role: 'assistant',
-        conversationId: conversation.id,
-        userId: req.user.id
-      }
-    });
+    // Create assistant message
+    const assistantMessage = await createAssistantMessage(aiResponse, conversation.id, req.user.id);
 
-    await prisma.conversation.update({
-      where: { id: conversation.id },
-      data: { updatedAt: new Date() }
-    });
+    // Update conversation timestamp
+    await updateConversationTimestamp(conversation.id);
 
     res.json({
       userMessage,
       assistantMessage,
       conversationId: conversation.id
     });
+
   } catch (error) {
     console.error('Send message error:', error);
+    
+    if (error.message.includes('Conversation not found')) {
+      return res.status(404).json({ error: error.message });
+    }
+    
+    if (error.message.includes('required') || error.message.includes('invalid')) {
+      return res.status(400).json({ error: error.message });
+    }
+    
     res.status(500).json({ error: 'Internal server error' });
   }
 });

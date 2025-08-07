@@ -56,11 +56,7 @@ export function useConversations(onLogout) {
   };
 
   const deleteConversation = async (conversationId, e) => {
-    e.stopPropagation();
-    
-    if (!window.confirm('Are you sure you want to delete this conversation?')) {
-      return;
-    }
+    if (e) e.stopPropagation();
 
     try {
       await axios.delete(`${API_URL}/api/conversations/${conversationId}`, {

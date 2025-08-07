@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useTheme } from '../contexts/ThemeContext';
 import ExportModal from './ExportModal';
+import DeleteConfirmModal from './DeleteConfirmModal';
 import { 
   Plus, 
   MessageCircle, 
@@ -28,6 +29,10 @@ function Sidebar({
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [conversationToExport, setConversationToExport] = useState(null);
   const [isExporting, setIsExporting] = useState(false);
+  
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [conversationToDelete, setConversationToDelete] = useState(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const handleExportClick = (conversation, e) => {
     e.stopPropagation();
@@ -41,6 +46,25 @@ function Sidebar({
       await onExportConversation(conversationId, format, conversation);
     } finally {
       setIsExporting(false);
+    }
+  };
+
+  const handleDeleteClick = (conversation, e) => {
+    e.stopPropagation();
+    setConversationToDelete(conversation);
+    setDeleteModalOpen(true);
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!conversationToDelete) return;
+    
+    setIsDeleting(true);
+    try {
+      await onDeleteConversation(conversationToDelete.id);
+    } finally {
+      setIsDeleting(false);
+      setDeleteModalOpen(false);
+      setConversationToDelete(null);
     }
   };
 
@@ -84,7 +108,7 @@ function Sidebar({
                 </button>
                 <button
                   className="delete-conversation-btn"
-                  onClick={(e) => onDeleteConversation(conv.id, e)}
+                  onClick={(e) => handleDeleteClick(conv, e)}
                   title="Delete conversation"
                 >
                   <Trash2 size={14} />
@@ -119,6 +143,18 @@ function Sidebar({
         onExport={handleExport}
         conversation={conversationToExport}
         isExporting={isExporting}
+      />
+
+      {/* Delete Confirmation Modal */}
+      <DeleteConfirmModal
+        isOpen={deleteModalOpen}
+        onClose={() => {
+          setDeleteModalOpen(false);
+          setConversationToDelete(null);
+        }}
+        onConfirm={handleDeleteConfirm}
+        conversation={conversationToDelete}
+        isDeleting={isDeleting}
       />
     </div>
   );
